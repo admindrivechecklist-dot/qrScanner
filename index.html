@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FleetCheck QR Scanner</title>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <style>
+    body{font-family:Arial,sans-serif;background:#eef2f7;margin:0;padding:16px;color:#172033}
+    main{max-width:600px;margin:auto;background:white;padding:18px;border-radius:12px}
+    h2{text-align:center;color:#123b63}
+    button{width:100%;padding:14px;margin-top:10px;border:0;border-radius:7px;background:#087b50;color:white;font-weight:bold}
+    input{width:100%;padding:12px;box-sizing:border-box;margin-top:8px;border:1px solid #bbb;border-radius:7px}
+    #reader{width:100%;margin-top:14px}
+    #status{padding:12px;margin-top:12px;background:#f1f5f9;border-radius:7px;overflow-wrap:anywhere}
+    .red{background:#fee2e2!important;color:#991b1b}
+  </style>
+</head>
+<body>
+<main>
+  <h2>FleetCheck QR Scanner</h2>
+  <p>Allow camera access and scan the existing vehicle QR code.</p>
+  <div id="reader"></div>
+  <button id="start">START CAMERA SCANNER</button>
+  <div id="status">Waiting to scan...</div>
+  <hr>
+  <p><b>Manual entry (if QR cannot be scanned)</b></p>
+  <input id="manual" placeholder="Example: CAX 4022">
+  <button id="manualBtn">SEND VEHICLE NUMBER</button>
+</main>
+
+<script>
+let scanner=null;
+let running=false;
+const params=new URLSearchParams(location.search);
+const returnUrl=params.get("return");
+
+function setStatus(text,error=false){
+  const el=document.getElementById("status");
+  el.textContent=text;
+  el.className=error?"red":"";
+}
+
+function validateReturnUrl(){
+  if(!returnUrl) throw new Error("Return URL missing. Open scanner from FleetCheck form.");
+  const u=new URL(returnUrl);
+  const allowed=["script.google.com","script.googleusercontent.com"];
+  if(!allowed.includes(u.hostname)) throw new Error("Invalid return URL.");
+  return u;
+}
+
+function getVehicleFromQR(raw){
+  const text=String(raw||"").trim();
+
+  try {
+    const obj=JSON.parse(text);
+    const v=findVehicle(obj);
+    if(v) return v;
+  } catch(e){}
+
+  let fragment=text.replace(/^#/,"");
+  try {
+    const u=new URL(text);
+    fragment=u.hash.replace(/^#/,"");
+    const queryDefaults=u.searchParams.get("defaults");
+    if(queryDefaults){
+      try { const v=findVehicle(JSON.parse(queryDefaults)); if(v) return v; } catch(e){}
+    }
+  } catch(e){}
+
+  const p=new URLSearchParams(fragment);
+  const defaults=p.get("defaults");
+  if(defaults){
+    try { const v=findVehicle(JSON.parse(defaults)); if(v) return v; } catch(e){}
+  }
+
+  const match=text.match(/"VehicleID"\s*:\s*"([^"]+)"/i);
+  return match?match[1]:"";
+}
+
+function findVehicle(obj){
+  if(!obj || typeof obj!=="object") return "";
+  for(const key of Object.keys(obj)){
+    if(["vehicleid","vehicle number","vehicleno"].includes(key.toLowerCase())){
+      return String(obj[key]||"").trim();
+    }
+  }
+  return "";
+}
+
+function sendVehicle(vehicle){
+  vehicle=String(vehicle||"").trim();
+  if(!vehicle) return setStatus("Vehicle number was not found in QR code.",true);
+  try {
+    const u=validateReturnUrl();
+    u.searchParams.set("vehicle",vehicle);
+    setStatus("Vehicle found: "+vehicle+". Returning to FleetCheck...");
+    stopScanner();
+    location.href=u.toString();
+  } catch(e) {
+    setStatus(e.message,true);
+  }
+}
+
+async function startScanner(){
+  try {
+    validateReturnUrl();
+    if(!window.Html5Qrcode) throw new Error("Scanner library did not load. Check internet connection.");
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia)
+      throw new Error("Camera is unavailable. Use HTTPS and allow camera access.");
+
+    scanner=new Html5Qrcode("reader");
+    await scanner.start(
+      {facingMode:"environment"},
+      {fps:10,qrbox:{width:250,height:250}},
+      decoded=>{
+        const vehicle=getVehicleFromQR(decoded);
+        if(vehicle) sendVehicle(vehicle);
+        else setStatus("QR scanned, but VehicleID was not found in defaults JSON.",true);
+      },
+      ()=>{}
+    );
+    running=true;
+    document.getElementById("start").disabled=true;
+    setStatus("Camera is running. Point it at the vehicle QR code.");
+  } catch(e) {
+    setStatus("Camera error: "+e.message,true);
+  }
+}
+
+async function stopScanner(){
+  if(scanner && running){
+    try{await scanner.stop();scanner.clear();}catch(e){}
+    running=false;
+  }
+  document.getElementById("start").disabled=false;
+}
+
+document.getElementById("start").addEventListener("click",startScanner);
+document.getElementById("manualBtn").addEventListener("click",()=>{
+  sendVehicle(document.getElementById("manual").value);
+});
+</script>
+</body>
+</html>
